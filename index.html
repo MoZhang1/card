@@ -1,0 +1,227 @@
+
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>小丑牌 Demo V3.1</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; background: #f7f7f7; text-align: center; padding: 10px; }
+    h1 { margin-top: 10px; }
+    .card {
+      display: inline-block; width: 60px; height: 90px; margin: 5px;
+      border: 2px solid #333; border-radius: 8px; background: white;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; cursor: pointer; transition: 0.2s;
+    }
+    .selected { background: #d2eaff; border-color: #0077ff; transform: translateY(-5px); }
+    #hand, #jokerZone { margin-top: 10px; display: flex; flex-wrap: wrap; justify-content: center; }
+    button { padding: 10px 20px; margin: 10px; font-size: 16px; cursor: pointer; }
+    .jokerCard {
+      border: 1px dashed #666; border-radius: 5px; margin: 5px; padding: 8px;
+      background: #fff2c2; font-size: 14px; max-width: 120px;
+    }
+    #info, #message, #score { margin: 8px; }
+    #overlay, #startScreen, #winScreen {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(255,255,255,0.95); display: flex;
+      flex-direction: column; align-items: center; justify-content: center;
+      z-index: 999; font-size: 20px;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="startScreen">
+    <h1>🎴 小丑牌 Demo V3.1</h1>
+    <p>复刻核心玩法：回合制 + 小丑卡 + 牌型打分</p>
+    <button onclick="startGame()">开始游戏</button>
+  </div>
+
+  <div id="overlay" class="hidden">
+    <div id="overlayMessage"></div>
+    <button onclick="nextLevel()">进入下一关</button>
+  </div>
+
+  <div id="winScreen" class="hidden">
+    <h2>🎉 恭喜你通关所有关卡！</h2>
+    <div id="finalScore"></div>
+    <button onclick="location.reload()">重新开始</button>
+  </div>
+
+  <h1>小丑牌 Demo V3.1</h1>
+  <div id="info"></div>
+  <div id="jokerZone"></div>
+  <div id="score"></div>
+  <div id="hand"></div>
+  <button onclick="playHand()">出牌</button>
+  <div id="message"></div>
+
+  <script>
+    const suits = ['♠','♥','♣','♦'];
+    const ranks = [2,3,4,5,6,7,8,9,10,11,12,13,14]; // A=14
+    const rankMap = {11:'J',12:'Q',13:'K',14:'A'};
+    const jokerPool = [
+      {name:'Wild Joker', desc:'所有牌型 mult +1', effect:(s)=>s.mult+=1},
+      {name:'Combo J', desc:'每次重复相同牌型加分', effect:(s)=>s.combo=true},
+      {name:'Bomb J', desc:'对子以上牌型 mult +1', effect:(s)=>{if(s.tag!=='High Card')s.mult+=1} },
+      {name:'Draw+1', desc:'Draw 次数 +1', effect:(s)=>s.draws+=1},
+      {name:'Flush J', desc:'同花牌型 chips +50', effect:(s)=>{if(s.tag==='Flush')s.chips+=50} },
+      {name:'Straight J', desc:'顺子牌型 chips +30', effect:(s)=>{if(s.tag==='Straight')s.chips+=30} },
+      {name:'High J', desc:'高牌牌型 mult x2', effect:(s)=>{if(s.tag==='High Card')s.mult*=2} },
+      {name:'Dog J', desc:'任意牌型 mult +1', effect:(s)=>s.mult+=1},
+      {name:'Bonus J', desc:'所有得分 +25', effect:(s)=>s.chips+=25},
+      {name:'Lucky J', desc:'第一轮加分 +100', effect:(s)=>{if(s.firstPlay)s.chips+=100}}
+    ];
+
+    let level = 1, score = 0, drawLeft = 3, goal = 300;
+    let jokerDeck = [], lastTag = '', firstPlay = true;
+
+    function getCardText(rank, suit) {
+      return (rankMap[rank] || rank) + suit;
+    }
+
+    function shuffleDeck() {
+      const deck = [];
+      for (let s of suits) for (let r of ranks) deck.push({rank: r, suit: s});
+      for (let i = deck.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [deck[i], deck[j]] = [deck[j], deck[i]];
+      }
+      return deck;
+    }
+
+    function drawHand() {
+      const deck = shuffleDeck();
+      const hand = deck.slice(0, 8);
+      const handDiv = document.getElementById('hand');
+      handDiv.innerHTML = '';
+      hand.forEach((card, i) => {
+        const div = document.createElement('div');
+        div.className = 'card';
+        div.textContent = getCardText(card.rank, card.suit);
+        div.onclick = () => {
+          div.classList.toggle('selected');
+          if (document.querySelectorAll('.card.selected').length > 5)
+            div.classList.remove('selected');
+        };
+        handDiv.appendChild(div);
+      });
+    }
+
+    function evaluateHand(cards) {
+      const r = cards.map(c=>c.rank).sort((a,b)=>a-b);
+      const s = cards.map(c=>c.suit);
+      const counts = {};
+      r.forEach(v=>counts[v]=(counts[v]||0)+1);
+      const freqs = Object.values(counts).sort((a,b)=>b-a);
+      const flush = s.every(v=>v===s[0]);
+      const straight = r.every((v,i,a)=> !i || v-a[i-1]===1);
+      let tag = 'High Card';
+      if (flush && straight) tag = 'Straight Flush';
+      else if (freqs[0] === 4) tag = 'Four of a Kind';
+      else if (freqs[0] === 3 && freqs[1] === 2) tag = 'Full House';
+      else if (flush) tag = 'Flush';
+      else if (straight) tag = 'Straight';
+      else if (freqs[0] === 3) tag = 'Three of a Kind';
+      else if (freqs[0] === 2 && freqs[1] === 2) tag = 'Two Pair';
+      else if (freqs[0] === 2) tag = 'One Pair';
+
+      const chipTable = {
+        'High Card': 20, 'One Pair': 40, 'Two Pair': 60, 'Three of a Kind': 80,
+        'Straight': 100, 'Flush': 120, 'Full House': 150, 'Four of a Kind': 180, 'Straight Flush': 220
+      };
+      return { tag, chips: chipTable[tag] || 20 };
+    }
+
+    function playHand() {
+      if (drawLeft <= 0) return;
+      const selected = document.querySelectorAll('.card.selected');
+      if (selected.length !== 5) {
+        alert('请选择 5 张牌出牌'); return;
+      }
+      const cards = Array.from(selected).map(el => {
+        const t = el.textContent;
+        const suit = t.slice(-1);
+        const val = t.slice(0, -1);
+        const rank = Object.entries(rankMap).find(([_,v])=>v===val)?.[0] || val;
+        return {rank: parseInt(rank), suit};
+      });
+      let { tag, chips } = evaluateHand(cards);
+      let mult = 1, thisScore = 0;
+
+      let context = { tag, chips, mult, draws: drawLeft, firstPlay };
+      jokerDeck.forEach(j => j.effect(context));
+      if (context.combo && tag === lastTag) context.chips += 20;
+
+      thisScore = context.chips * context.mult;
+      lastTag = tag;
+      score += thisScore;
+      drawLeft = context.draws - 1;
+      firstPlay = false;
+
+      document.getElementById('score').textContent =
+        `打出【${tag}】，得分：${context.chips} × ${context.mult} = ${thisScore}，Draw 剩余：${drawLeft}`;
+
+      updateInfo();
+
+      if (score >= goal) {
+        if (level === 10) {
+          document.getElementById('finalScore').textContent = `最终得分：${score}`;
+          document.getElementById('winScreen').classList.remove('hidden');
+        } else {
+          document.getElementById('overlay').classList.remove('hidden');
+          document.getElementById('overlayMessage').textContent = `✅ 晋级第 ${level+1} 关，目标分 ${goal+200}`;
+        }
+      } else if (drawLeft === 0) {
+        alert(`💀 游戏失败，本关未达 ${goal} 分`);
+        location.reload();
+        return;
+      } else {
+        drawHand();
+      }
+    }
+
+    function updateInfo() {
+      document.getElementById('info').textContent = `关卡：${level} / 当前分数：${score} / 目标：${goal}`;
+    }
+
+    function nextLevel() {
+      level++; drawLeft = 3; score = 0; goal += 200; firstPlay = true; lastTag = '';
+      updateInfo();
+      drawHand();
+      document.getElementById('overlay').classList.add('hidden');
+    }
+
+    function getRandomJokers() {
+      const pool = [...jokerPool];
+      const deck = [];
+      for (let i = 0; i < 3; i++) {
+        const idx = Math.floor(Math.random() * pool.length);
+        deck.push(pool[idx]);
+        pool.splice(idx, 1);
+      }
+      return deck;
+    }
+
+    function renderJokers() {
+      const zone = document.getElementById('jokerZone');
+      zone.innerHTML = '';
+      jokerDeck.forEach(j => {
+        const div = document.createElement('div');
+        div.className = 'jokerCard';
+        div.innerHTML = `<strong>${j.name}</strong><br>${j.desc}`;
+        zone.appendChild(div);
+      });
+    }
+
+    function startGame() {
+      document.getElementById('startScreen').classList.add('hidden');
+      jokerDeck = getRandomJokers();
+      renderJokers();
+      updateInfo();
+      drawHand();
+    }
+  </script>
+</body>
+</html>
